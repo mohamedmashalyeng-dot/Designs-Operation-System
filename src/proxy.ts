@@ -1,11 +1,11 @@
 import type { NextRequest } from "next/server";
-import { NextResponse } from "next/server";
 import { updateSession } from "@/lib/supabase/proxy";
 import { isAuthBypassEnabled } from "@/lib/dev/bypass-auth";
+import { ensureDevSession } from "@/lib/dev/ensure-dev-session";
 
 export function proxy(request: NextRequest) {
   if (isAuthBypassEnabled()) {
-    return NextResponse.next();
+    return ensureDevSession(request);
   }
   return updateSession(request);
 }
