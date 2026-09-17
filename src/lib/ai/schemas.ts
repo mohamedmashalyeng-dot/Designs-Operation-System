@@ -9,6 +9,8 @@ export const SCHEMA_NAMES = {
   creativeConcepts: "creative_concepts",
   imageReview: "image_review",
   designEdit: "design_edit",
+  visualDirection: "visual_direction",
+  platformCopy: "platform_copy",
 } as const;
 
 /**
@@ -95,6 +97,61 @@ export const imageReviewSchema = z.object({
 });
 
 export type ImageReview = z.infer<typeof imageReviewSchema>;
+
+/**
+ * AI Visual Director output (product spec §3/§9): one shared production
+ * brief plus N concrete variations. Shared fields keep every variation
+ * strategically faithful to the concept; each variation's own composition/
+ * subjectPosition/imagePrompt is what makes the four options meaningfully
+ * different rather than the same prompt sent four times.
+ */
+export const visualVariationSchema = z.object({
+  label: z.string().describe("Short internal label for this variation, e.g. 'Mentoring moment, close crop'."),
+  composition: z.string().describe("How this variation's composition/framing differs from the others."),
+  subjectPosition: z.string().describe("Where the subject sits in frame, consistent with the requested layout's negative space."),
+  action: z.string().describe("What the subject is doing in this specific variation."),
+  imagePrompt: z
+    .string()
+    .describe(
+      "Complete, self-contained image-generation prompt for this variation: subject, environment, action, composition, lighting, photography style, camera direction, authenticity requirements, and what to avoid. Must not ask for rendered text, logos, or UI elements — those are composited separately."
+    ),
+});
+
+export const visualDirectionSchema = z.object({
+  subject: z.string().describe("The main subject across all variations, specific enough to brief a photographer."),
+  environment: z.string().describe("The setting/location, grounded and specific (UK context where relevant)."),
+  photographyStyle: z.string().describe("e.g. 'documentary editorial', 'natural-light candid'."),
+  lighting: z.string().describe("Lighting direction and quality."),
+  mood: z.string().describe("The emotional register the imagery should carry."),
+  cameraDirection: z.string().describe("Framing/lens guidance, e.g. 'shallow depth of field, eye-level, 35mm-equivalent'."),
+  negativeSpace: z.string().describe("Where clean negative space is preserved for the chosen layout's text panel."),
+  textSafeArea: z.string().describe("Which region of the frame must stay clear of visual clutter for overlaid typography."),
+  brandConsiderations: z.array(z.string()).default([]).describe("Brand rules/tone this imagery must respect."),
+  authenticityRequirements: z.array(z.string()).default([]).describe("What makes this read as real rather than generic stock photography."),
+  avoid: z.array(z.string()).default([]).describe("Concrete things to avoid — generic AI tells, stock-photo cliches, fake text/logos, etc."),
+  variations: z.array(visualVariationSchema).length(4).describe("Exactly 4 meaningfully different variations, all faithful to the subject/environment/mood above."),
+});
+
+export type VisualDirection = z.infer<typeof visualDirectionSchema>;
+export type VisualVariation = z.infer<typeof visualVariationSchema>;
+
+/**
+ * Platform Copywriter output (product spec §7-11): one platform's copy,
+ * generated separately per channel rather than reusing the same caption
+ * everywhere — LinkedIn, Instagram, Facebook, and Website each get their
+ * own tone/length/structure via buildPlatformCopyPrompt's per-channel
+ * instructions.
+ */
+export const platformCopySchema = z.object({
+  headline: z
+    .string()
+    .describe("Distinct headline text where the platform uses one (LinkedIn, Website); return the same as the body's opening line for caption-only platforms."),
+  body: z.string().describe("The main post copy/caption, sized and styled for this specific platform."),
+  cta: z.string().describe("Call to action text appropriate for this platform."),
+  hashtags: z.array(z.string()).default([]).describe("Relevant hashtags — empty array where the platform convention doesn't call for them."),
+});
+
+export type PlatformCopy = z.infer<typeof platformCopySchema>;
 
 export const designEditSchema = z.object({
   changeType: z

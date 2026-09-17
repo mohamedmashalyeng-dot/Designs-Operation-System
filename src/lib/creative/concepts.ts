@@ -4,8 +4,24 @@ import type { Database, Tables } from "@/types/database";
 import { getLLMProvider } from "@/lib/ai";
 import { creativeConceptsSchema, SCHEMA_NAMES } from "@/lib/ai/schemas";
 import { CONCEPT_GENERATOR_INSTRUCTIONS, buildConceptsPrompt } from "@/lib/ai/prompts";
+import type { CreativeConcept } from "@/lib/ai/schemas";
 import { getBrandContext } from "./brand-context";
 import { briefRowToCreativeBrief, getLatestBrief } from "./briefs";
+
+/** Maps a `creative_concepts` row back to the camelCase shape the AI
+ * layer's prompts and schema expect (mirrors `briefRowToCreativeBrief`). */
+export function conceptRowToCreativeConcept(row: Tables<"creative_concepts">): CreativeConcept {
+  return {
+    name: row.name,
+    strategicIdea: row.strategic_idea,
+    visualDescription: row.visual_description,
+    headline: row.headline,
+    supportingCopy: row.supporting_copy,
+    cta: row.cta,
+    imagePrompt: row.image_prompt,
+    rationale: row.rationale,
+  };
+}
 
 /**
  * Generates a fresh batch of creative concepts from a campaign's latest

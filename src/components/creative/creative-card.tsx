@@ -3,11 +3,13 @@ import { ImageIcon, Loader2 } from "lucide-react";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { DESIGN_STATUS_META } from "@/lib/constants/labels";
 import type { DesignSummary } from "@/lib/creative/queries";
+import { getFormat } from "@/lib/creative/formats";
 import { cn } from "@/lib/utils";
 
 export function CreativeCard({ design, className }: { design: DesignSummary; className?: string }) {
   const meta = DESIGN_STATUS_META[design.status];
-  const isGenerating = design.status === "generating";
+  const isGenerating = design.status === "generating" || design.status === "variations_ready";
+  const format = getFormat(design.formatId);
 
   return (
     <Link
@@ -17,7 +19,10 @@ export function CreativeCard({ design, className }: { design: DesignSummary; cla
         className
       )}
     >
-      <div className="relative aspect-square w-full overflow-hidden bg-muted">
+      <div
+        className="relative w-full overflow-hidden bg-muted"
+        style={{ aspectRatio: `${format.width} / ${format.height}` }}
+      >
         {design.thumbnailUrl ? (
           // eslint-disable-next-line @next/next/no-img-element -- dynamic Supabase Storage URL, not a static asset
           <img

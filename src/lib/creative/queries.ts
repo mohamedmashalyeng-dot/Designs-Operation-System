@@ -18,6 +18,7 @@ export interface DesignSummary {
   status: DesignStatus;
   campaignId: string;
   campaignTitle: string;
+  formatId: string;
   headline: string | null;
   thumbnailUrl: string | null;
   updatedAt: string;
@@ -60,6 +61,7 @@ async function toDesignSummaries(
       status: design.status,
       campaignId: design.campaign_id,
       campaignTitle: campaignById.get(design.campaign_id)?.title ?? "Untitled campaign",
+      formatId: design.format_id,
       headline: version?.headline ?? null,
       thumbnailUrl: asset?.storage_path ? (signedUrls.get(asset.storage_path) ?? null) : null,
       updatedAt: design.updated_at,
@@ -122,6 +124,7 @@ export interface DesignVersionSummary {
   headline: string;
   supportingCopy: string;
   cta: string;
+  layoutPreset: string;
   changeDescription: string;
   changedByAI: boolean;
   createdAt: string;
@@ -139,6 +142,71 @@ export interface DesignDetail {
   currentVersion: DesignVersionSummary | null;
   versions: DesignVersionSummary[];
   feedback: Tables<"feedback">[];
+}
+
+export interface PendingVariation {
+  assetId: string;
+  thumbnailUrl: string | null;
+  label: string;
+  status: AssetStatus;
+  errorMessage: string | null;
+}
+
+export interface PendingVariationsBatch {
+  designId: string;
+  formatId: string;
+  variations: PendingVariation[];
+  headline: string;
+  supportingCopy: string;
+  cta: string;
+  layoutPreset: string;
+}
+
+/** The generated_assets from a design's most recent `generateVariations`
+ * batch that haven't been attached to a version yet — backs the "choose
+ * your favourite" screen. Scoped via `designs.latest_batch_id` rather than
+ * concept_id, since two designs (the original + any format adaptation) can
+ * share a concept and both have in-flight batches at once. */
+export async function getPendingVariations(
+  supabase: SupabaseClient<Database>,
+  designId: string
+): Promise<PendingVariationsBatch | null> {
+  const { data: design } = await supabase.from("designs").select("*").eq("id", designId).single();
+  if (!design || !design.latest_batch_id) return null;
+
+  const { data: assets } = await supabase
+    .from("generated_assets")
+    .select("*")
+    .eq("generation_batch_id", design.latest_batch_id)
+    .is("design_version_id", null)
+    .order("created_at", { ascending: true });
+  if (!assets || assets.length === 0) return null;
+
+  const paths = assets.map((a) => a.storage_path).filter((p): p is string => Boolean(p));
+  const signedUrls = await getSignedUrls(supabase, "generated-images", paths);
+
+  const [{ data: concept }, { data: currentVersion }] = await Promise.all([
+    supabase.from("creative_concepts").select("*").eq("id", design.concept_id).single(),
+    design.current_version_id
+      ? supabase.from("design_versions").select("headline, supporting_copy, cta, layout_preset").eq("id", design.current_version_id).single()
+      : Promise.resolve({ data: null }),
+  ]);
+
+  return {
+    designId: design.id,
+    formatId: design.format_id,
+    variations: assets.map((a) => ({
+      assetId: a.id,
+      thumbnailUrl: a.storage_path ? (signedUrls.get(a.storage_path) ?? null) : null,
+      label: a.status === "failed" ? "Failed" : "Visual option",
+      status: a.status,
+      errorMessage: a.error_message,
+    })),
+    headline: currentVersion?.headline ?? concept?.headline ?? design.title,
+    supportingCopy: currentVersion?.supporting_copy ?? concept?.supporting_copy ?? "",
+    cta: currentVersion?.cta ?? concept?.cta ?? "Learn more",
+    layoutPreset: currentVersion?.layout_preset ?? "bottom_message",
+  };
 }
 
 export async function getDesignDetail(
@@ -173,6 +241,7 @@ export async function getDesignDetail(
       headline: v.headline,
       supportingCopy: v.supporting_copy,
       cta: v.cta,
+      layoutPreset: v.layout_preset,
       changeDescription: v.change_description,
       changedByAI: v.changed_by_ai,
       createdAt: v.created_at,
@@ -206,6 +275,13 @@ export async function getAssetThumbnailUrl(
   } catch {
     return null;
   }
+}
+
+/** All channel-adapted versions prepared from an approved master design
+ * (product spec §27/§28) — backs the grouped "Final Campaign Review" screen. */
+export async function getChannelVersions(supabase: SupabaseClient<Database>, masterDesignId: string): Promise<DesignSummary[]> {
+  const { data } = await supabase.from("designs").select("*").eq("master_design_id", masterDesignId).order("created_at", { ascending: true });
+  return toDesignSummaries(supabase, data ?? []);
 }
 
 export async function countDesignsByStatus(

@@ -52,7 +52,7 @@ export async function GET(request: NextRequest) {
     if (!membership) throw new Error("No organisation found for this user");
 
     const admin = createAdminClient();
-    await admin.from("connections").upsert(
+    const { error: saveError } = await admin.from("connections").upsert(
       {
         organisation_id: membership.organisation_id,
         provider: "canva",
@@ -64,6 +64,11 @@ export async function GET(request: NextRequest) {
       },
       { onConflict: "organisation_id,provider" }
     );
+    if (saveError) {
+      console.error("Canva connection could not be saved:", saveError.code);
+      redirectBase.searchParams.set("error", "save_failed");
+      return NextResponse.redirect(redirectBase);
+    }
 
     redirectBase.searchParams.set("connected", "1");
     return NextResponse.redirect(redirectBase);

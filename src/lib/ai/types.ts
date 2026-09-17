@@ -111,3 +111,19 @@ export interface ImageEvalProvider {
     input: ImageEvaluationInput<T>
   ): Promise<StructuredGenerationResult<T>>;
 }
+
+// ── Embeddings (Knowledge retrieval) ────────────────────────────────────
+// Deliberately no mock implementation: a fake vector would produce
+// meaningless similarity results while looking like it works. Callers use
+// `isEmbeddingAvailable()` and fall back to full-text search when this
+// isn't configured — see src/lib/knowledge/service.ts.
+
+export interface EmbeddingResult {
+  embedding: number[];
+  model: string;
+}
+
+export interface EmbeddingProvider {
+  readonly id: string;
+  embed(text: string): Promise<EmbeddingResult>;
+}

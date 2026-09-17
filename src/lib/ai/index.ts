@@ -1,9 +1,10 @@
 import "server-only";
-import type { ImageEvalProvider, ImageProvider, LLMProvider } from "./types";
+import type { EmbeddingProvider, ImageEvalProvider, ImageProvider, LLMProvider } from "./types";
 import { isOpenAIConfigured } from "./providers/openai/client";
 import { OpenAILLMProvider } from "./providers/openai/llm-provider";
 import { OpenAIImageProvider } from "./providers/openai/image-provider";
 import { OpenAIVisionProvider } from "./providers/openai/vision-provider";
+import { OpenAIEmbeddingProvider } from "./providers/openai/embedding-provider";
 import { MockLLMProvider } from "./providers/mock/llm-provider";
 import { MockImageProvider } from "./providers/mock/image-provider";
 import { MockVisionProvider } from "./providers/mock/vision-provider";
@@ -19,6 +20,7 @@ import { MockVisionProvider } from "./providers/mock/vision-provider";
 let llmProvider: LLMProvider | null = null;
 let imageProvider: ImageProvider | null = null;
 let imageEvalProvider: ImageEvalProvider | null = null;
+let embeddingProvider: EmbeddingProvider | null = null;
 
 export function getLLMProvider(): LLMProvider {
   if (llmProvider) return llmProvider;
@@ -46,6 +48,21 @@ export function getImageEvalProvider(): ImageEvalProvider {
  * rather than the mock — used to surface a "mock mode" badge in the UI. */
 export function isUsingRealAIProvider(): boolean {
   return isOpenAIConfigured();
+}
+
+/** No mock fallback exists for embeddings (see EmbeddingProvider's doc
+ * comment) — callers must check this and degrade to full-text search. */
+export function isEmbeddingAvailable(): boolean {
+  return isOpenAIConfigured();
+}
+
+export function getEmbeddingProvider(): EmbeddingProvider {
+  if (embeddingProvider) return embeddingProvider;
+  if (!isOpenAIConfigured()) {
+    throw new Error("No embedding provider configured — check isEmbeddingAvailable() before calling this.");
+  }
+  embeddingProvider = new OpenAIEmbeddingProvider();
+  return embeddingProvider;
 }
 
 export * from "./types";

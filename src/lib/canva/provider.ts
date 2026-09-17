@@ -3,12 +3,9 @@ import type { CanvaDesignRef, CanvaProvider } from "./types";
 
 /**
  * Real implementation against the documented Canva Connect API endpoints
- * (verified 2026-09-16 — see the header comment in ./types.ts). Two shape
- * details below are marked "verify live": Canva's docs excerpt didn't
- * show the exact wrapper key for a couple of responses, so this parses
- * defensively rather than assuming. Confirm against a real response
- * (Developer Portal → integration → API logs) once CANVA_CLIENT_ID/SECRET
- * are configured, and tighten these if the shape differs.
+ * (verified 2026-09-17). Design links are nested under design.urls in
+ * the Create design response, as documented at:
+ * https://www.canva.dev/docs/connect/api-reference/designs/create-design/
  */
 
 const API_BASE = "https://api.canva.com/rest/v1";
@@ -106,19 +103,21 @@ export class CanvaConnectProvider implements CanvaProvider {
       throw new Error(`Canva design creation failed (${response.status}): ${await response.text()}`);
     }
 
-    // verify live: confirm whether this is wrapped as { design: {...} } or flat.
-    const raw = (await response.json()) as Record<string, unknown>;
-    const design = (raw.design ?? raw) as {
-      id: string;
-      edit_url: string;
-      view_url: string;
-      thumbnail?: { url: string };
+    const { design } = (await response.json()) as {
+      design?: {
+        id: string;
+        urls?: { edit_url: string; view_url: string };
+        thumbnail?: { url: string };
+      };
     };
+    if (!design?.id || !design.urls?.edit_url || !design.urls.view_url) {
+      throw new Error("Canva created the design but returned no editing or viewing URL");
+    }
 
     return {
       designId: design.id,
-      editUrl: design.edit_url,
-      viewUrl: design.view_url,
+      editUrl: design.urls.edit_url,
+      viewUrl: design.urls.view_url,
       thumbnailUrl: design.thumbnail?.url ?? null,
     };
   }

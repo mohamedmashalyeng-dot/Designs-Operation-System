@@ -4,10 +4,14 @@ import type { LucideIcon } from "lucide-react";
 import { Plus, Sparkles, ClipboardCheck, FolderKanban, CheckCircle2, Send, ArrowRight } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { getActiveCampaigns, getDesignsByStatus, getRecentDesigns } from "@/lib/creative/queries";
+import { getUpcomingJobs } from "@/lib/publishing/queries";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { CampaignCard } from "@/components/creative/campaign-card";
 import { CreativeCard } from "@/components/creative/creative-card";
+import { StatusBadge } from "@/components/shared/status-badge";
+import { CHANNEL_LABELS, PUBLICATION_STATUS_META } from "@/lib/constants/labels";
+import { formatDateTime } from "@/lib/utils/format";
 import { Button } from "@/components/ui/button";
 
 export const metadata: Metadata = { title: "Dashboard" };
@@ -51,11 +55,12 @@ function CreativeGrid({ children }: { children: React.ReactNode }) {
 
 export default async function DashboardPage() {
   const supabase = await createClient();
-  const [awaitingReview, activeCampaigns, recentDesigns, approved] = await Promise.all([
+  const [awaitingReview, activeCampaigns, recentDesigns, approved, upcomingJobs] = await Promise.all([
     getDesignsByStatus(supabase, ["ai_review", "human_review", "changes_requested"], 6),
     getActiveCampaigns(supabase, 6),
     getRecentDesigns(supabase, 6),
     getDesignsByStatus(supabase, ["approved"], 4),
+    getUpcomingJobs(supabase, 5),
   ]);
 
   return (
@@ -132,12 +137,36 @@ export default async function DashboardPage() {
         )}
       </Section>
 
-      <Section title="Scheduled & published" icon={Send}>
-        <EmptyState
-          icon={Send}
-          title="Publishing isn't connected yet"
-          description="Connect a channel under Connections to schedule and publish approved creatives directly from Creative Ops."
-        />
+      <Section title="Scheduled & published" icon={Send} viewAllHref={upcomingJobs.length ? "/calendar" : undefined}>
+        {upcomingJobs.length ? (
+          <div className="space-y-2">
+            {upcomingJobs.map((job) => {
+              const meta = PUBLICATION_STATUS_META[job.status];
+              return (
+                <Link
+                  key={job.id}
+                  href={`/review/${job.designId}`}
+                  className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm transition-colors hover:border-foreground/20"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate font-medium">{job.designTitle}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {CHANNEL_LABELS[job.channel]}
+                      {job.scheduledFor ? ` · ${formatDateTime(job.scheduledFor)}` : ""}
+                    </p>
+                  </div>
+                  <StatusBadge label={meta.label} tone={meta.tone} />
+                </Link>
+              );
+            })}
+          </div>
+        ) : (
+          <EmptyState
+            icon={Send}
+            title="Nothing scheduled"
+            description="Connect a channel under Connections to schedule and publish approved creatives directly from Creative Ops."
+          />
+        )}
       </Section>
     </div>
   );

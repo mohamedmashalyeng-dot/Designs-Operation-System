@@ -68,6 +68,94 @@ const MOCK_CONCEPTS = [
   },
 ];
 
+function mockVisualDirection(prompt: string) {
+  const conceptMatch = prompt.match(/"visualDescription":\s*"(.*?)(?<!\\)"/);
+  const scene = conceptMatch?.[1] ?? "the selected concept's scene";
+  return {
+    subject: `The subject described in the concept: ${scene}`,
+    environment: "A credible, lived-in UK workplace — not a staged studio set.",
+    photographyStyle: "Documentary editorial, natural-light candid.",
+    lighting: "Soft directional daylight, realistic skin tones.",
+    mood: "Grounded and genuine, not performative.",
+    cameraDirection: "Eye-level, shallow depth of field, 35mm-equivalent framing.",
+    negativeSpace: "Preserved on the side opposite the subject for the chosen layout's text panel.",
+    textSafeArea: "Kept free of busy detail so overlaid typography stays legible.",
+    brandConsiderations: ["Match Kent Business College's credible, professional tone."],
+    authenticityRequirements: ["Unposed, candid moment rather than looking at camera.", "Realistic workplace detail, not overly tidy."],
+    avoid: ["Generic stock-photo staging", "Unnatural smiling", "Fake text, logos or certificates", "Distorted hands"],
+    variations: [
+      {
+        label: "Wide establishing shot",
+        composition: "Wide shot establishing the environment, subject small in frame.",
+        subjectPosition: "Off-centre, following the requested negative space.",
+        action: "Mid-task, unaware of camera.",
+        imagePrompt: `Documentary-style wide establishing shot: ${scene}. Natural daylight, candid, no posing, no rendered text or logos.`,
+      },
+      {
+        label: "Medium candid interaction",
+        composition: "Medium shot, waist-up, natural interaction with a colleague or material.",
+        subjectPosition: "Positioned per the layout's subject side, clean negative space opposite.",
+        action: "Mid-conversation or mid-review, genuine expression.",
+        imagePrompt: `Documentary-style medium shot, candid interaction: ${scene}. Soft directional light, authentic expression, no rendered text or logos.`,
+      },
+      {
+        label: "Close, focused moment",
+        composition: "Closer crop on the subject's focused expression and hands-on task.",
+        subjectPosition: "Centred within the non-text portion of the frame.",
+        action: "Focused, hands-on detail of the work itself.",
+        imagePrompt: `Editorial close crop, focused candid moment: ${scene}. Shallow depth of field, realistic skin tones, no rendered text or logos.`,
+      },
+      {
+        label: "Environmental detail",
+        composition: "Slightly wider, showing believable workplace detail around the subject.",
+        subjectPosition: "Balanced against the negative-space requirement.",
+        action: "Natural pause mid-task, environment visible.",
+        imagePrompt: `Documentary editorial shot with visible authentic workplace detail: ${scene}. Natural light, unposed, no rendered text or logos.`,
+      },
+    ],
+  };
+}
+
+function mockPlatformCopy(prompt: string) {
+  const channelMatch = prompt.match(/^Platform: (\w+)/);
+  const channel = channelMatch?.[1] ?? "facebook";
+  const headlineMatch = prompt.match(/"headline":\s*"(.*?)(?<!\\)"/);
+  const headline = headlineMatch?.[1] ?? "Grow Your Next Leader, Not Just Your Headcount";
+  const ctaMatch = prompt.match(/"cta":\s*"(.*?)(?<!\\)"/);
+  const cta = ctaMatch?.[1] ?? "Explore the Programme";
+
+  switch (channel) {
+    case "linkedin":
+      return {
+        headline,
+        body: `${headline}\n\nStructured career development, built around real projects and measurable outcomes — for employers who want to grow capability from within rather than compete for it externally.`,
+        cta,
+        hashtags: ["Apprenticeships", "L&D", "TalentDevelopment"],
+      };
+    case "instagram":
+      return {
+        headline,
+        body: `${headline} ✦ Real progress, real people, real opportunity.`,
+        cta,
+        hashtags: ["CareerGrowth", "Apprenticeship", "SkillsForLife", "KentBusinessCollege", "ProfessionalDevelopment"],
+      };
+    case "website":
+      return {
+        headline,
+        body: `A structured pathway for developing the next generation of project leaders, built around real projects and measurable outcomes.`,
+        cta,
+        hashtags: [],
+      };
+    default:
+      return {
+        headline,
+        body: `${headline}. Give your team a structured path to grow into bigger roles — built around real projects, not just theory.`,
+        cta,
+        hashtags: [],
+      };
+  }
+}
+
 function mockImageReview() {
   return {
     overallScore: 84,
@@ -97,6 +185,12 @@ export class MockLLMProvider implements LLMProvider {
         break;
       case SCHEMA_NAMES.creativeConcepts:
         raw = { concepts: MOCK_CONCEPTS };
+        break;
+      case SCHEMA_NAMES.visualDirection:
+        raw = mockVisualDirection(input.prompt);
+        break;
+      case SCHEMA_NAMES.platformCopy:
+        raw = mockPlatformCopy(input.prompt);
         break;
       case SCHEMA_NAMES.imageReview:
         raw = mockImageReview();

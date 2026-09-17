@@ -22,6 +22,10 @@ export function brandAssetPath(organisationId: string, brandId: string, assetId:
   return `${organisationId}/${brandId}/${assetId}-${fileName}`;
 }
 
+export function knowledgeDocumentPath(organisationId: string, documentId: string, fileName: string) {
+  return `${organisationId}/${documentId}-${fileName}`;
+}
+
 export function referenceImagePath(organisationId: string, campaignId: string, fileName: string) {
   return `${organisationId}/${campaignId}/${Date.now()}-${fileName}`;
 }

@@ -1,18 +1,32 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Tables } from "@/types/database";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getImageEvalProvider, getImageProvider, getLLMProvider } from "@/lib/ai";
-import { designEditSchema, imageReviewSchema, SCHEMA_NAMES, type ImageReview } from "@/lib/ai/schemas";
-import { AI_EDITOR_INSTRUCTIONS, IMAGE_REVIEWER_INSTRUCTIONS, buildEditPrompt, buildImageReviewPrompt } from "@/lib/ai/prompts";
+import {
+  designEditSchema,
+  imageReviewSchema,
+  visualDirectionSchema,
+  SCHEMA_NAMES,
+  type ImageReview,
+} from "@/lib/ai/schemas";
+import {
+  AI_EDITOR_INSTRUCTIONS,
+  IMAGE_REVIEWER_INSTRUCTIONS,
+  VISUAL_DIRECTOR_INSTRUCTIONS,
+  buildEditPrompt,
+  buildImageReviewPrompt,
+  buildVisualDirectorPrompt,
+} from "@/lib/ai/prompts";
 import { extensionForMimeType, generatedImagePath } from "@/lib/storage/paths";
 import { getSignedUrl } from "@/lib/storage/signed-url";
 import { downloadAsBase64 } from "@/lib/storage/download";
+import { getFormat, orientationForFormat } from "./formats";
+import { getLayoutPreset, defaultLayoutForOrientation } from "./layouts";
 import { getBrandContext } from "./brand-context";
-import { briefRowToCreativeBrief } from "./briefs";
-
-const DEFAULT_WIDTH = 1024;
-const DEFAULT_HEIGHT = 1024;
+import { briefRowToCreativeBrief, getLatestBrief } from "./briefs";
+import { conceptRowToCreativeConcept } from "./concepts";
 
 export interface DesignWithVersion {
   design: Tables<"designs">;
@@ -38,6 +52,7 @@ interface GenerateVersionParams {
   headline: string;
   supportingCopy: string;
   cta: string;
+  layoutPreset?: string;
   changeDescription: string;
   changedByAI: boolean;
   changedByUserId?: string;
@@ -72,6 +87,18 @@ export async function generateAndAttachVersion(
     .single();
   if (campaignError || !campaign) throw new Error("Campaign not found");
 
+  const format = getFormat(design.format_id);
+  let layoutPreset = params.layoutPreset;
+  if (!layoutPreset && design.current_version_id) {
+    const { data: currentVersion } = await supabase
+      .from("design_versions")
+      .select("layout_preset")
+      .eq("id", design.current_version_id)
+      .maybeSingle();
+    layoutPreset = currentVersion?.layout_preset;
+  }
+  layoutPreset ??= defaultLayoutForOrientation(orientationForFormat(format));
+
   await supabase.from("designs").update({ status: "generating" }).eq("id", design.id);
 
   const imageProvider = getImageProvider();
@@ -84,8 +111,8 @@ export async function generateAndAttachVersion(
       provider: imageProvider.id,
       model: "pending",
       prompt: params.imagePrompt,
-      width: DEFAULT_WIDTH,
-      height: DEFAULT_HEIGHT,
+      width: format.width,
+      height: format.height,
       status: "generating",
     })
     .select()
@@ -98,10 +125,10 @@ export async function generateAndAttachVersion(
           prompt: params.imagePrompt,
           sourceImageBase64: params.editSource.base64,
           sourceMimeType: params.editSource.mimeType,
-          width: DEFAULT_WIDTH,
-          height: DEFAULT_HEIGHT,
+          width: format.width,
+          height: format.height,
         })
-      : await imageProvider.generate({ prompt: params.imagePrompt, width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT });
+      : await imageProvider.generate({ prompt: params.imagePrompt, width: format.width, height: format.height });
 
     const image = result.images[0];
     const ext = extensionForMimeType(image.mimeType);
@@ -131,6 +158,7 @@ export async function generateAndAttachVersion(
         supporting_copy: params.supportingCopy,
         cta: params.cta,
         generated_asset_id: asset.id,
+        layout_preset: layoutPreset,
         change_description: params.changeDescription,
         changed_by_user_id: params.changedByUserId ?? null,
         changed_by_ai: params.changedByAI,
@@ -203,39 +231,360 @@ async function runAIReview(
   }
 }
 
-/** Creates the reviewable Design for a chosen concept and runs its first
- * generation. Marks the concept `selected` so the UI can show which of
- * the ~4 proposed concepts the campaign actually continued with. */
-export async function createDesignFromConcept(
+export interface DesignVariation {
+  assetId: string;
+  storagePath: string;
+  label: string;
+  imagePrompt: string;
+}
+
+export interface VariationsBatch {
+  design: Tables<"designs">;
+  batchId: string;
+  variations: DesignVariation[];
+  headline: string;
+  supportingCopy: string;
+  cta: string;
+  layoutPreset: string;
+  failedCount: number;
+}
+
+/**
+ * AI Visual Director + batch generation (product spec §3/§9): produces a
+ * shared production brief and 4 concrete, meaningfully-different visual
+ * variations for a design's target format, uploads each, and leaves them
+ * unattached to any version — `chooseVariation` is what turns a pick into
+ * design_version 1 (or a later version, for "Regenerate Creative"). Partial
+ * failure is tolerated: whatever variations succeed are returned, failed
+ * ones are recorded on their own asset row rather than failing the batch.
+ */
+export async function generateVariations(
   supabase: SupabaseClient<Database>,
-  conceptId: string
-): Promise<DesignWithVersion> {
+  params: { designId: string; layoutPreset?: string; headline?: string; supportingCopy?: string; cta?: string }
+): Promise<VariationsBatch> {
+  const { data: design, error: designError } = await supabase
+    .from("designs")
+    .select("*")
+    .eq("id", params.designId)
+    .single();
+  if (designError || !design) throw new Error("Design not found");
+
   const { data: concept, error: conceptError } = await supabase
     .from("creative_concepts")
     .select("*")
-    .eq("id", conceptId)
+    .eq("id", design.concept_id)
+    .single();
+  if (conceptError || !concept) throw new Error("Concept not found");
+
+  const { data: campaign, error: campaignError } = await supabase
+    .from("campaigns")
+    .select("*")
+    .eq("id", design.campaign_id)
+    .single();
+  if (campaignError || !campaign) throw new Error("Campaign not found");
+
+  const briefRow = await getLatestBrief(supabase, campaign.id);
+  if (!briefRow) throw new Error("Generate a creative brief before generating visuals");
+
+  let currentVersion: Tables<"design_versions"> | null = null;
+  if (design.current_version_id) {
+    const { data } = await supabase.from("design_versions").select("*").eq("id", design.current_version_id).maybeSingle();
+    currentVersion = data ?? null;
+  }
+
+  const format = getFormat(design.format_id);
+  const orientation = orientationForFormat(format);
+  const layoutPreset = params.layoutPreset ?? currentVersion?.layout_preset ?? defaultLayoutForOrientation(orientation);
+  const layout = getLayoutPreset(layoutPreset);
+  const headline = params.headline ?? currentVersion?.headline ?? concept.headline;
+  const supportingCopy = params.supportingCopy ?? currentVersion?.supporting_copy ?? concept.supporting_copy;
+  const cta = params.cta ?? currentVersion?.cta ?? concept.cta;
+
+  const previousStatus = design.status;
+  await supabase.from("designs").update({ status: "generating" }).eq("id", design.id);
+
+  try {
+    const brand = await getBrandContext(supabase, campaign.organisation_id);
+
+    const direction = await getLLMProvider().generateStructured({
+      schemaName: SCHEMA_NAMES.visualDirection,
+      schema: visualDirectionSchema,
+      instructions: VISUAL_DIRECTOR_INSTRUCTIONS,
+      prompt: buildVisualDirectorPrompt({
+        brief: briefRowToCreativeBrief(briefRow),
+        concept: conceptRowToCreativeConcept(concept),
+        audienceType: campaign.audience_type,
+        objective: campaign.objective,
+        channels: campaign.channels,
+        formatLabel: `${format.platform} ${format.label}`,
+        aspectRatio: format.aspectRatio,
+        layoutCompositionNote: layout.compositionNote,
+        brand,
+      }),
+    });
+
+    const batchId = randomUUID();
+    const imageProvider = getImageProvider();
+    const variations: DesignVariation[] = [];
+    let failedCount = 0;
+
+    for (const variation of direction.data.variations) {
+      const { data: asset } = await supabase
+        .from("generated_assets")
+        .insert({
+          organisation_id: campaign.organisation_id,
+          campaign_id: campaign.id,
+          concept_id: design.concept_id,
+          provider: imageProvider.id,
+          model: "pending",
+          prompt: variation.imagePrompt,
+          width: format.width,
+          height: format.height,
+          status: "generating",
+          generation_batch_id: batchId,
+        })
+        .select()
+        .single();
+      if (!asset) {
+        failedCount += 1;
+        continue;
+      }
+
+      try {
+        const result = await imageProvider.generate({ prompt: variation.imagePrompt, width: format.width, height: format.height });
+        const image = result.images[0];
+        const ext = extensionForMimeType(image.mimeType);
+        const path = generatedImagePath(campaign.organisation_id, campaign.id, asset.id, ext);
+
+        const admin = createAdminClient();
+        const { error: uploadError } = await admin.storage
+          .from("generated-images")
+          .upload(path, Buffer.from(image.base64, "base64"), { contentType: image.mimeType, upsert: true });
+        if (uploadError) throw new Error(`Storage upload failed: ${uploadError.message}`);
+
+        await supabase
+          .from("generated_assets")
+          .update({ status: "completed", storage_path: path, mime_type: image.mimeType, model: result.model, provider: result.provider })
+          .eq("id", asset.id);
+
+        variations.push({ assetId: asset.id, storagePath: path, label: variation.label, imagePrompt: variation.imagePrompt });
+      } catch (err) {
+        failedCount += 1;
+        await supabase
+          .from("generated_assets")
+          .update({ status: "failed", error_message: err instanceof Error ? err.message : "Generation failed" })
+          .eq("id", asset.id);
+      }
+    }
+
+    if (variations.length === 0) {
+      throw new Error("All visual variations failed to generate — try again.");
+    }
+
+    const { data: updatedDesign, error: updateError } = await supabase
+      .from("designs")
+      .update({ status: "variations_ready", latest_batch_id: batchId })
+      .eq("id", design.id)
+      .select()
+      .single();
+    if (updateError || !updatedDesign) throw new Error(updateError?.message ?? "Failed to save design");
+
+    return { design: updatedDesign, batchId, variations, headline, supportingCopy, cta, layoutPreset, failedCount };
+  } catch (error) {
+    await supabase.from("designs").update({ status: previousStatus === "generating" ? "draft" : previousStatus }).eq("id", design.id);
+    throw error;
+  }
+}
+
+/** Turns a chosen candidate from `generateVariations` into a real design
+ * version — no new image generation, just attaches the already-uploaded
+ * asset (product spec §9 "select one"). Runs the same AI review as any
+ * other version. */
+export async function chooseVariation(
+  supabase: SupabaseClient<Database>,
+  params: {
+    designId: string;
+    assetId: string;
+    headline: string;
+    supportingCopy: string;
+    cta: string;
+    layoutPreset: string;
+    changeDescription: string;
+    changedByUserId: string;
+  }
+): Promise<DesignWithVersion> {
+  const { data: design, error: designError } = await supabase.from("designs").select("*").eq("id", params.designId).single();
+  if (designError || !design) throw new Error("Design not found");
+
+  const { data: asset, error: assetError } = await supabase
+    .from("generated_assets")
+    .select("*")
+    .eq("id", params.assetId)
+    .eq("status", "completed")
+    .single();
+  if (assetError || !asset || !asset.storage_path) throw new Error("Chosen visual not found");
+
+  const { data: campaign, error: campaignError } = await supabase.from("campaigns").select("*").eq("id", design.campaign_id).single();
+  if (campaignError || !campaign) throw new Error("Campaign not found");
+
+  const versionNumber = await getNextVersionNumber(supabase, design.id);
+  const { data: version, error: versionError } = await supabase
+    .from("design_versions")
+    .insert({
+      design_id: design.id,
+      version_number: versionNumber,
+      headline: params.headline,
+      supporting_copy: params.supportingCopy,
+      cta: params.cta,
+      generated_asset_id: asset.id,
+      layout_preset: params.layoutPreset,
+      change_description: params.changeDescription,
+      changed_by_user_id: params.changedByUserId,
+      changed_by_ai: false,
+      ai_prompt: asset.prompt,
+    })
+    .select()
+    .single();
+  if (versionError || !version) throw new Error(versionError?.message ?? "Failed to save design version");
+
+  await supabase.from("generated_assets").update({ design_version_id: version.id }).eq("id", asset.id);
+
+  const aiReview = await runAIReview(supabase, { campaign, design, version, storagePath: asset.storage_path });
+
+  await supabase.from("designs").update({ status: "human_review", current_version_id: version.id }).eq("id", design.id);
+  const { data: updatedDesign } = await supabase.from("designs").select("*").eq("id", design.id).single();
+
+  return { design: updatedDesign ?? design, version: { ...version, ai_review: aiReview }, asset, aiReview };
+}
+
+/** Creates the reviewable Design for a chosen concept in a chosen format
+ * and kicks off its first variation batch. Marks the concept `selected` so
+ * the UI can show which of the ~4 proposed concepts the campaign actually
+ * continued with. */
+export async function createDesignFromConcept(
+  supabase: SupabaseClient<Database>,
+  params: { conceptId: string; formatId: string }
+): Promise<VariationsBatch> {
+  const { data: concept, error: conceptError } = await supabase
+    .from("creative_concepts")
+    .select("*")
+    .eq("id", params.conceptId)
     .single();
   if (conceptError || !concept) throw new Error("Concept not found");
 
   const { data: design, error: designError } = await supabase
     .from("designs")
-    .insert({ campaign_id: concept.campaign_id, concept_id: concept.id, title: concept.name, status: "draft" })
+    .insert({
+      campaign_id: concept.campaign_id,
+      concept_id: concept.id,
+      title: concept.name,
+      status: "draft",
+      format_id: params.formatId,
+    })
     .select()
     .single();
   if (designError || !design) throw new Error(designError?.message ?? "Failed to create design");
 
-  await supabase.from("creative_concepts").update({ status: "selected" }).eq("id", conceptId);
+  await supabase.from("creative_concepts").update({ status: "selected" }).eq("id", params.conceptId);
   await supabase.from("campaigns").update({ status: "in_review" }).eq("id", concept.campaign_id);
 
-  return generateAndAttachVersion(supabase, {
+  return generateVariations(supabase, { designId: design.id });
+}
+
+/** "Create another format" (product spec §26): a new Design targeting a
+ * different platform size, faithful to the same concept and carrying over
+ * the source's current copy — generated fresh through the same Visual
+ * Director + variation-picker flow rather than stretching the existing
+ * image, since a good crop for one aspect ratio is rarely a good crop for
+ * a very different one. */
+export async function adaptDesignFormat(
+  supabase: SupabaseClient<Database>,
+  params: { sourceDesignId: string; formatId: string }
+): Promise<VariationsBatch> {
+  const { data: source, error: sourceError } = await supabase.from("designs").select("*").eq("id", params.sourceDesignId).single();
+  if (sourceError || !source) throw new Error("Design not found");
+  if (!source.current_version_id) throw new Error("Approve a version before adapting it to another format");
+
+  const { data: sourceVersion } = await supabase
+    .from("design_versions")
+    .select("headline, supporting_copy, cta")
+    .eq("id", source.current_version_id)
+    .single();
+
+  const { data: design, error: designError } = await supabase
+    .from("designs")
+    .insert({
+      campaign_id: source.campaign_id,
+      concept_id: source.concept_id,
+      title: source.title,
+      status: "draft",
+      format_id: params.formatId,
+    })
+    .select()
+    .single();
+  if (designError || !design) throw new Error(designError?.message ?? "Failed to create adapted design");
+
+  return generateVariations(supabase, {
     designId: design.id,
-    imagePrompt: concept.image_prompt,
-    headline: concept.headline,
-    supportingCopy: concept.supporting_copy,
-    cta: concept.cta,
-    changeDescription: "Initial generation from selected concept",
-    changedByAI: true,
+    headline: sourceVersion?.headline,
+    supportingCopy: sourceVersion?.supporting_copy,
+    cta: sourceVersion?.cta,
   });
+}
+
+/** Manual headline/copy/CTA/layout edit (product spec §19) — never calls
+ * the AI, just reuses the current image and creates a new version. Any
+ * edit re-enters human review, same as an AI edit would, so an approved
+ * design never silently drifts from what was actually approved. */
+export async function editDesignCopy(
+  supabase: SupabaseClient<Database>,
+  params: { designId: string; headline: string; supportingCopy: string; cta: string; layoutPreset: string; userId: string }
+): Promise<DesignWithVersion> {
+  const { data: design, error: designError } = await supabase.from("designs").select("*").eq("id", params.designId).single();
+  if (designError || !design) throw new Error("Design not found");
+  if (!design.current_version_id) throw new Error("No version to edit yet");
+
+  const { data: currentVersion, error: versionError } = await supabase
+    .from("design_versions")
+    .select("*")
+    .eq("id", design.current_version_id)
+    .single();
+  if (versionError || !currentVersion) throw new Error("Current version not found");
+
+  const versionNumber = await getNextVersionNumber(supabase, design.id);
+  const { data: newVersion, error: insertError } = await supabase
+    .from("design_versions")
+    .insert({
+      design_id: design.id,
+      version_number: versionNumber,
+      headline: params.headline,
+      supporting_copy: params.supportingCopy,
+      cta: params.cta,
+      generated_asset_id: currentVersion.generated_asset_id,
+      layout_preset: params.layoutPreset,
+      change_description: "Copy edited manually",
+      changed_by_user_id: params.userId,
+      changed_by_ai: false,
+      ai_prompt: currentVersion.ai_prompt,
+      ai_review: currentVersion.ai_review,
+    })
+    .select()
+    .single();
+  if (insertError || !newVersion) throw new Error(insertError?.message ?? "Failed to save changes");
+
+  await supabase.from("designs").update({ status: "human_review", current_version_id: newVersion.id }).eq("id", design.id);
+
+  const asset = currentVersion.generated_asset_id
+    ? (await supabase.from("generated_assets").select("*").eq("id", currentVersion.generated_asset_id).single()).data
+    : null;
+  if (!asset) throw new Error("Original asset missing");
+
+  return {
+    design: { ...design, status: "human_review", current_version_id: newVersion.id },
+    version: newVersion,
+    asset,
+    aiReview: (newVersion.ai_review as ImageReview | null) ?? null,
+  };
 }
 
 /** Points a design back at an earlier version (product spec §14 "restore
@@ -335,6 +684,7 @@ export async function requestAIEdit(
         supporting_copy: editResult.data.supportingCopy,
         cta: editResult.data.cta,
         generated_asset_id: currentVersion.generated_asset_id,
+        layout_preset: currentVersion.layout_preset,
         change_description: editResult.data.editSummary,
         changed_by_user_id: params.userId,
         changed_by_ai: true,
@@ -378,6 +728,7 @@ export async function requestAIEdit(
     headline: editResult.data.headline,
     supportingCopy: editResult.data.supportingCopy,
     cta: editResult.data.cta,
+    layoutPreset: currentVersion.layout_preset,
     changeDescription: editResult.data.editSummary,
     changedByAI: true,
     changedByUserId: params.userId,

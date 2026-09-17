@@ -1,6 +1,6 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/types/database";
+import type { Channel, Database } from "@/types/database";
 
 /**
  * `connections.access_token_encrypted` / `refresh_token_encrypted` are
@@ -45,4 +45,19 @@ export async function getConnection(
     expiresAt: data.expires_at,
     updatedAt: data.updated_at,
   };
+}
+
+/** Which publishable channels currently have a connected integration —
+ * backs the publish/schedule picker so it never offers a channel that
+ * would just fail. "meta" covers both "facebook" and "instagram" (one
+ * connection, the Page plus its linked Instagram account if any). */
+export async function getConnectedChannels(supabase: SupabaseClient<Database>): Promise<Channel[]> {
+  const { data } = await supabase.from("connections").select(SAFE_COLUMNS).eq("status", "connected");
+  const providers = new Set((data ?? []).map((c) => c.provider));
+
+  const channels: Channel[] = [];
+  if (providers.has("linkedin")) channels.push("linkedin");
+  if (providers.has("meta")) channels.push("facebook", "instagram");
+  if (providers.has("website")) channels.push("website");
+  return channels;
 }

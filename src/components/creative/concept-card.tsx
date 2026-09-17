@@ -16,20 +16,22 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { selectConcept, rejectConcept, updateConceptAction } from "@/lib/actions/designs";
+import { FormatPickerDialog } from "./format-picker";
 import type { Tables } from "@/types/database";
 import { cn } from "@/lib/utils";
 
 export function ConceptCard({ concept, campaignId }: { concept: Tables<"creative_concepts">; campaignId: string }) {
   const [editOpen, setEditOpen] = useState(false);
+  const [formatOpen, setFormatOpen] = useState(false);
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
   const disabled = pending || concept.status !== "proposed";
 
-  function handleSelect() {
+  function handleGenerate(formatId: string) {
     setError(null);
     startTransition(async () => {
-      const result = await selectConcept(campaignId, concept.id);
+      const result = await selectConcept({ campaignId, conceptId: concept.id, formatId });
       if (result?.error) setError(result.error);
     });
   }
@@ -77,7 +79,7 @@ export function ConceptCard({ concept, campaignId }: { concept: Tables<"creative
       {error && <p className="text-xs text-destructive">{error}</p>}
 
       <div className="mt-auto flex items-center gap-2 pt-1">
-        <Button size="sm" onClick={handleSelect} disabled={disabled} className="flex-1">
+        <Button size="sm" onClick={() => setFormatOpen(true)} disabled={disabled} className="flex-1">
           {pending ? <Loader2 className="animate-spin" /> : <Sparkles />}
           Select
         </Button>
@@ -90,6 +92,14 @@ export function ConceptCard({ concept, campaignId }: { concept: Tables<"creative
       </div>
 
       <EditConceptDialog concept={concept} campaignId={campaignId} open={editOpen} onOpenChange={setEditOpen} />
+      <FormatPickerDialog
+        open={formatOpen}
+        onOpenChange={setFormatOpen}
+        description="Pick the platform size to generate this concept for — the AI Visual Director will produce 4 options in this format."
+        pending={pending}
+        error={error}
+        onConfirm={handleGenerate}
+      />
     </div>
   );
 }

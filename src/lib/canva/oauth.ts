@@ -11,9 +11,10 @@ const AUTHORIZE_URL = "https://www.canva.com/api/oauth/authorize";
 const TOKEN_URL = "https://api.canva.com/rest/v1/oauth/token";
 
 // asset:write — upload the generated image as a Canva asset.
+// asset:read — poll the upload job to retrieve the uploaded asset.
 // design:content:write — create a design pre-populated with that asset.
 // design:content:read — read design/export state for the return-sync.
-export const CANVA_SCOPES = "asset:write design:content:write design:content:read";
+export const CANVA_SCOPES = "asset:read asset:write design:content:write design:content:read";
 
 export interface PkcePair {
   codeVerifier: string;
@@ -118,9 +119,9 @@ export async function refreshCanvaToken(params: { clientId: string; clientSecret
 }
 
 export function getCanvaOAuthConfig() {
-  const clientId = process.env.CANVA_CLIENT_ID;
-  const clientSecret = process.env.CANVA_CLIENT_SECRET;
-  const redirectUri = process.env.CANVA_REDIRECT_URI;
+  const clientId = process.env.CANVA_CLIENT_ID?.trim();
+  const clientSecret = process.env.CANVA_CLIENT_SECRET?.trim();
+  const redirectUri = process.env.CANVA_REDIRECT_URI?.trim();
   if (!clientId || !clientSecret || !redirectUri) return null;
   return { clientId, clientSecret, redirectUri };
 }

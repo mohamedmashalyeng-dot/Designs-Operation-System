@@ -2,7 +2,6 @@ import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard,
   Sparkles,
-  Zap,
   ClipboardCheck,
   LibraryBig,
   CalendarDays,
@@ -67,9 +66,9 @@ export const NAV_SECTIONS: NavSection[] = [
     icon: Plug,
     children: [
       { label: "Canva", href: "/connections/canva" },
-      { label: "Meta", href: "/connections/meta", comingSoon: true },
-      { label: "LinkedIn", href: "/connections/linkedin", comingSoon: true },
-      { label: "Website", href: "/connections/website", comingSoon: true },
+      { label: "Meta", href: "/connections/meta" },
+      { label: "LinkedIn", href: "/connections/linkedin" },
+      { label: "Website", href: "/connections/website" },
     ],
   },
   { label: "Analytics", href: "/analytics", icon: BarChart3 },

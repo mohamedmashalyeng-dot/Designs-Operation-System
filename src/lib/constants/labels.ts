@@ -4,6 +4,8 @@ import type {
   CampaignStatus,
   Channel,
   DesignStatus,
+  KnowledgeDocumentStatus,
+  PublicationStatus,
   RejectionReason,
 } from "./enums";
 
@@ -62,6 +64,7 @@ export const CAMPAIGN_STATUS_META: Record<CampaignStatus, { label: string; tone:
 export const DESIGN_STATUS_META: Record<DesignStatus, { label: string; tone: StatusTone }> = {
   draft: { label: "Draft", tone: "neutral" },
   generating: { label: "Generating…", tone: "progress" },
+  variations_ready: { label: "Choose a visual", tone: "review" },
   ai_review: { label: "AI review", tone: "progress" },
   human_review: { label: "Awaiting review", tone: "review" },
   changes_requested: { label: "Changes requested", tone: "warning" },
@@ -69,4 +72,21 @@ export const DESIGN_STATUS_META: Record<DesignStatus, { label: string; tone: Sta
   rejected: { label: "Rejected", tone: "danger" },
   scheduled: { label: "Scheduled", tone: "review" },
   published: { label: "Published", tone: "success" },
+};
+
+export const PUBLICATION_STATUS_META: Record<PublicationStatus, { label: string; tone: StatusTone }> = {
+  queued: { label: "Queued", tone: "neutral" },
+  scheduled: { label: "Scheduled", tone: "review" },
+  publishing: { label: "Publishing…", tone: "progress" },
+  published: { label: "Published", tone: "success" },
+  failed: { label: "Failed", tone: "danger" },
+  cancelled: { label: "Cancelled", tone: "neutral" },
+};
+
+export const KNOWLEDGE_DOCUMENT_STATUS_META: Record<KnowledgeDocumentStatus, { label: string; tone: StatusTone }> = {
+  uploaded: { label: "Uploaded", tone: "neutral" },
+  processing: { label: "Processing…", tone: "progress" },
+  ready: { label: "Ready", tone: "success" },
+  failed: { label: "Failed", tone: "danger" },
+  outdated: { label: "Outdated", tone: "warning" },
 };

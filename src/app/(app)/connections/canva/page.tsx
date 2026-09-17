@@ -11,9 +11,11 @@ import { formatDateTime } from "@/lib/utils/format";
 export const metadata: Metadata = { title: "Canva" };
 
 const ERROR_MESSAGES: Record<string, string> = {
-  not_configured: "Canva isn't configured on the server yet (CANVA_CLIENT_ID / CANVA_CLIENT_SECRET missing).",
+  not_configured: "Canva isn't configured on the server yet (CANVA_CLIENT_ID, CANVA_CLIENT_SECRET, or CANVA_REDIRECT_URI missing).",
+  access_denied: "Canva access wasn't approved. Select Connect Canva to try again.",
   invalid_state: "The connection attempt expired or failed a security check. Please try again.",
   exchange_failed: "Canva rejected the connection request. Please try again.",
+  save_failed: "Canva approved access, but the connection couldn't be saved. Please try again or contact your workspace administrator.",
 };
 
 export default async function CanvaConnectionPage({
@@ -25,13 +27,15 @@ export default async function CanvaConnectionPage({
   const configured = Boolean(getCanvaOAuthConfig());
 
   const connected = connection?.status === "connected";
-  const error = typeof params.error === "string" ? ERROR_MESSAGES[params.error] : null;
+  const error = typeof params.error === "string"
+    ? ERROR_MESSAGES[params.error] ?? "The Canva connection couldn't be completed. Please try again."
+    : null;
 
   return (
     <div className="max-w-2xl space-y-8">
       <PageHeader title="Canva" description="Advanced manual design editing for AI-generated creative." />
 
-      {params.connected && (
+      {params.connected === "1" && connected && !error && (
         <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-400">
           <CheckCircle2 className="size-4" />
           Canva connected successfully.

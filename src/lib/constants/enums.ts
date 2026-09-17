@@ -41,6 +41,7 @@ export type ConceptStatus = (typeof CONCEPT_STATUSES)[number];
 export const DESIGN_STATUSES = [
   "draft",
   "generating",
+  "variations_ready",
   "ai_review",
   "human_review",
   "changes_requested",
@@ -86,5 +87,23 @@ export type ConnectionStatus = (typeof CONNECTION_STATUSES)[number];
 export const CANVA_SYNC_STATUSES = ["not_synced", "syncing", "synced", "error"] as const;
 export type CanvaSyncStatus = (typeof CANVA_SYNC_STATUSES)[number];
 
-export const PUBLICATION_STATUSES = ["queued", "scheduled", "publishing", "published", "failed"] as const;
+export const PUBLICATION_STATUSES = ["queued", "scheduled", "publishing", "published", "failed", "cancelled"] as const;
 export type PublicationStatus = (typeof PUBLICATION_STATUSES)[number];
+
+export const BRAND_RULE_CATEGORIES = ["visual", "copy", "logo", "photography", "compliance", "audience", "platform", "campaign"] as const;
+export type BrandRuleCategory = (typeof BRAND_RULE_CATEGORIES)[number];
+
+export const BRAND_RULE_PRIORITIES = ["critical", "high", "normal", "preference"] as const;
+export type BrandRulePriority = (typeof BRAND_RULE_PRIORITIES)[number];
+
+export const KNOWLEDGE_SOURCE_TYPES = ["upload", "drive"] as const;
+export type KnowledgeSourceType = (typeof KNOWLEDGE_SOURCE_TYPES)[number];
+
+export const KNOWLEDGE_DOCUMENT_STATUSES = ["uploaded", "processing", "ready", "failed", "outdated"] as const;
+export type KnowledgeDocumentStatus = (typeof KNOWLEDGE_DOCUMENT_STATUSES)[number];
+
+export const RECOMMENDATION_STATUSES = ["suggested", "saved", "dismissed", "created"] as const;
+export type RecommendationStatus = (typeof RECOMMENDATION_STATUSES)[number];
+
+export const DISMISSAL_REASONS = ["not_relevant", "already_planned", "wrong_timing", "wrong_audience", "not_a_priority", "other"] as const;
+export type DismissalReason = (typeof DISMISSAL_REASONS)[number];

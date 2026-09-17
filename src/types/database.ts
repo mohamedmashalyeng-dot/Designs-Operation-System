@@ -31,6 +31,11 @@ export type {
   ConnectionStatus,
   CanvaSyncStatus,
   PublicationStatus,
+  BrandRuleCategory,
+  BrandRulePriority,
+  KnowledgeSourceType,
+  KnowledgeDocumentStatus,
+  RecommendationStatus,
 } from "@/lib/constants/enums";
 
 import type {
@@ -50,6 +55,11 @@ import type {
   ConnectionStatus,
   CanvaSyncStatus,
   PublicationStatus,
+  BrandRuleCategory,
+  BrandRulePriority,
+  KnowledgeSourceType,
+  KnowledgeDocumentStatus,
+  RecommendationStatus,
 } from "@/lib/constants/enums";
 
 /**
@@ -122,6 +132,9 @@ export interface Database {
           brand_id: string;
           rule_text: string;
           is_active: boolean;
+          category: BrandRuleCategory;
+          priority: BrandRulePriority;
+          source: string | null;
           created_at: string;
         },
         "brand_id" | "rule_text"
@@ -136,6 +149,11 @@ export interface Database {
           problems: string[];
           motivations: string[];
           preferred_messaging: string | null;
+          roles: string[];
+          objections: string[];
+          avoid_messaging: string | null;
+          tone: string[];
+          platforms: string[];
           created_at: string;
           updated_at: string;
         },
@@ -148,7 +166,13 @@ export interface Database {
           audience_id: string | null;
           name: string;
           description: string | null;
+          long_description: string | null;
+          delivery_info: string | null;
           benefits: string[];
+          approved_claims: string[];
+          prohibited_claims: string[];
+          keywords: string[];
+          status: string;
           cta: string | null;
           reference_material_url: string | null;
           created_at: string;
@@ -234,6 +258,9 @@ export interface Database {
           title: string;
           status: DesignStatus;
           current_version_id: string | null;
+          format_id: string;
+          latest_batch_id: string | null;
+          master_design_id: string | null;
           canva_design_id: string | null;
           canva_edit_url: string | null;
           canva_last_synced_at: string | null;
@@ -252,6 +279,7 @@ export interface Database {
           supporting_copy: string;
           cta: string;
           generated_asset_id: string | null;
+          layout_preset: string;
           change_description: string;
           changed_by_user_id: string | null;
           changed_by_ai: boolean;
@@ -278,6 +306,9 @@ export interface Database {
           status: AssetStatus;
           error_message: string | null;
           parent_asset_id: string | null;
+          generation_batch_id: string | null;
+          focal_x: number | null;
+          focal_y: number | null;
           generation_params: Record<string, unknown>;
           created_at: string;
         },
@@ -349,11 +380,109 @@ export interface Database {
           published_at: string;
           metrics: Record<string, unknown>;
         },
-        "publication_job_id" | "design_id" | "connection_id" | "published_at"
+        "publication_job_id" | "design_id" | "connection_id"
+      >;
+      knowledge_documents: Table<
+        {
+          id: string;
+          organisation_id: string;
+          title: string;
+          source_type: KnowledgeSourceType;
+          storage_path: string | null;
+          mime_type: string | null;
+          size_bytes: number | null;
+          status: KnowledgeDocumentStatus;
+          error_message: string | null;
+          content_hash: string | null;
+          drive_file_id: string | null;
+          drive_modified_at: string | null;
+          last_synced_at: string | null;
+          created_by: string | null;
+          created_at: string;
+          updated_at: string;
+        },
+        "organisation_id" | "title"
+      >;
+      knowledge_chunks: Table<
+        {
+          id: string;
+          document_id: string;
+          organisation_id: string;
+          chunk_index: number;
+          content: string;
+          embedding: number[] | null;
+          embedding_model: string | null;
+          created_at: string;
+        },
+        "document_id" | "organisation_id" | "chunk_index" | "content"
+      >;
+      inspiration_items: Table<
+        {
+          id: string;
+          organisation_id: string;
+          title: string;
+          url: string | null;
+          storage_path: string | null;
+          notes: string | null;
+          category: string | null;
+          created_by: string | null;
+          created_at: string;
+        },
+        "organisation_id" | "title"
+      >;
+      competitors: Table<
+        {
+          id: string;
+          organisation_id: string;
+          name: string;
+          website: string | null;
+          notes: string | null;
+          created_at: string;
+        },
+        "organisation_id" | "name"
+      >;
+      campaign_recommendations: Table<
+        {
+          id: string;
+          organisation_id: string;
+          title: string;
+          reason: string;
+          objective: CampaignObjective | null;
+          audience_type: AudienceType | null;
+          product_id: string | null;
+          suggested_concept: string | null;
+          suggested_channels: Channel[];
+          priority: string;
+          evidence: string;
+          confidence: string;
+          status: RecommendationStatus;
+          dismissal_reason: string | null;
+          resulting_campaign_id: string | null;
+          created_at: string;
+          updated_at: string;
+        },
+        "organisation_id" | "title" | "reason" | "evidence"
+      >;
+      performance_snapshots: Table<
+        {
+          id: string;
+          organisation_id: string;
+          published_post_id: string;
+          metric_type: string;
+          value: number;
+          captured_at: string;
+          raw: Record<string, unknown>;
+        },
+        "organisation_id" | "published_post_id" | "metric_type" | "value"
       >;
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      match_knowledge_chunks: {
+        Args: { query_embedding: number[]; match_org: string; match_count?: number };
+        Returns: { id: string; document_id: string; content: string; similarity: number }[];
+      };
+    };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
   };

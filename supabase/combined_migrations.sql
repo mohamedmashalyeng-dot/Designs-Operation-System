@@ -167,6 +167,7 @@ $$;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+
 -- ─────────────────────────────────────────────────────────────────────────
 -- 0002_brand_brain.sql
 -- Brand identity, rules, audiences, products, and brand assets.
@@ -325,6 +326,7 @@ create policy "brand_assets_insert" on brand_assets for insert
   with check (is_member_of_org(org_id_for_brand(brand_id)));
 create policy "brand_assets_delete" on brand_assets for delete
   using (is_member_of_org(org_id_for_brand(brand_id)));
+
 -- ─────────────────────────────────────────────────────────────────────────
 -- 0003_campaigns.sql
 -- Campaigns, AI creative briefs, and creative concepts.
@@ -457,6 +459,7 @@ create policy "creative_concepts_update" on creative_concepts for update
   using (is_member_of_org(org_id_for_campaign(campaign_id)));
 create policy "creative_concepts_delete" on creative_concepts for delete
   using (is_member_of_org(org_id_for_campaign(campaign_id)));
+
 -- ─────────────────────────────────────────────────────────────────────────
 -- 0004_designs.sql
 -- Designs, their version history, and AI-generated image assets.
@@ -603,6 +606,7 @@ create policy "generated_assets_insert" on generated_assets for insert
   with check (is_member_of_org(organisation_id));
 create policy "generated_assets_update" on generated_assets for update
   using (is_member_of_org(organisation_id));
+
 -- ─────────────────────────────────────────────────────────────────────────
 -- 0005_review.sql
 -- Structured rejection/change feedback and approvals. This is the signal
@@ -660,6 +664,7 @@ create policy "approvals_select" on approvals for select
   using (is_member_of_org(org_id_for_design(design_id)));
 create policy "approvals_insert" on approvals for insert
   with check (is_member_of_org(org_id_for_design(design_id)) and user_id = auth.uid());
+
 -- ─────────────────────────────────────────────────────────────────────────
 -- 0006_connections_and_publishing.sql
 -- Third-party integrations (Canva/Meta/LinkedIn/Website) and the publishing
@@ -757,6 +762,7 @@ alter table published_posts enable row level security;
 
 create policy "published_posts_select" on published_posts for select
   using (is_member_of_org(org_id_for_design(design_id)));
+
 -- ─────────────────────────────────────────────────────────────────────────
 -- 0007_storage.sql
 -- Storage buckets and access policies. Every object path is namespaced
@@ -827,3 +833,356 @@ begin
     );
   end loop;
 end $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 0008_visual_variations.sql
+-- Format-aware generation: a design targets one social format and can be
+-- generated as several meaningfully-different visual variations that a
+-- human picks between before one becomes design_version 1. Formats and
+-- layout presets are app-level config (src/lib/creative/formats.ts,
+-- layouts.ts), not DB tables — same pattern already used for
+-- campaigns.channels, so adding one is a code change, not a migration.
+-- ─────────────────────────────────────────────────────────────────────────
+
+alter type design_status add value if not exists 'variations_ready';
+
+-- The format a design targets. Fixed for the lifetime of a design — asking
+-- for another platform size creates a new design (see adaptDesignFormat in
+-- src/lib/creative/designs.ts), it doesn't mutate this one.
+--
+-- latest_batch_id points at the most recent generation_variations batch for
+-- this design (see generated_assets.generation_batch_id below) — needed
+-- because generated_assets only links to a campaign/concept, not a design,
+-- and two designs can share a concept_id (format adaptation), so
+-- concept_id alone can't disambiguate whose pending batch is whose.
+alter table designs
+  add column format_id text not null default 'linkedin_landscape',
+  add column latest_batch_id uuid;
+
+-- The layout preset used to composite this version's headline/copy/CTA/logo
+-- over its image (see src/lib/creative/layouts.ts + CreativeRenderer).
+-- Versioned like headline/copy/cta so history reflects layout changes too.
+alter table design_versions
+  add column layout_preset text not null default 'bottom_message';
+
+-- generation_batch_id groups the N candidate images produced by one
+-- "Generate Creative" click, before any of them is attached to a version —
+-- lets the review UI query "unattached candidates for this design" for the
+-- variation picker. focal_x/focal_y (0-1, image-relative) support
+-- crop-aware rendering when an asset is reused across formats.
+alter table generated_assets
+  add column generation_batch_id uuid,
+  add column focal_x numeric,
+  add column focal_y numeric;
+
+create index generated_assets_batch_id_idx on generated_assets (generation_batch_id);
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 0009_channel_adaptation.sql
+-- Links a channel-specific adaptation (e.g. the Instagram Portrait version
+-- of an approved LinkedIn creative) back to the approved design it was
+-- prepared from — the grouping mechanism the "Prepare Campaign" final
+-- review screen uses to show every channel version of one campaign
+-- together. A design with no master is itself a master (the original,
+-- directly-approved creative).
+-- ─────────────────────────────────────────────────────────────────────────
+
+alter table designs
+  add column master_design_id uuid references designs (id) on delete set null;
+
+create index designs_master_design_id_idx on designs (master_design_id);
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 0010_publication_job_controls.sql
+-- Adds the "cancelled" status (product spec §25/§32 — cancelling a
+-- scheduled post shouldn't just delete the audit row) needed for
+-- reschedule/cancel controls on the Calendar page.
+-- ─────────────────────────────────────────────────────────────────────────
+
+alter type publication_status add value if not exists 'cancelled';
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 0011_brand_brain_knowledge.sql
+-- Extends the existing Brand Brain (brands/brand_rules/audiences/products,
+-- from 0002_brand_brain.sql) with a knowledge base, inspiration/competitor
+-- references, campaign recommendations, and a home for future performance
+-- data. Reuses every existing entity rather than duplicating it — this
+-- migration only adds what genuinely doesn't exist yet.
+-- ─────────────────────────────────────────────────────────────────────────
+
+create extension if not exists vector;
+
+-- ── brand_rules: structure + priority (product spec §5/§6) ────────────────
+create type brand_rule_category as enum ('visual', 'copy', 'logo', 'photography', 'compliance', 'audience', 'platform', 'campaign');
+create type brand_rule_priority as enum ('critical', 'high', 'normal', 'preference');
+
+alter table brand_rules
+  add column category brand_rule_category not null default 'campaign',
+  add column priority brand_rule_priority not null default 'normal',
+  add column source text;
+
+-- ── products: richer course/offering data (product spec §7/§8) ────────────
+alter table products
+  add column long_description text,
+  add column delivery_info text,
+  add column approved_claims text[] not null default '{}',
+  add column prohibited_claims text[] not null default '{}',
+  add column keywords text[] not null default '{}',
+  add column status text not null default 'active';
+
+-- ── audiences: richer profile data (product spec §9) ───────────────────────
+alter table audiences
+  add column roles text[] not null default '{}',
+  add column objections text[] not null default '{}',
+  add column avoid_messaging text,
+  add column tone text[] not null default '{}',
+  add column platforms text[] not null default '{}';
+
+-- ── knowledge_documents ─────────────────────────────────────────────────
+-- Uploaded (or, later, Drive-synced) source material. storage_path is null
+-- for a Drive-sourced document until/if Drive sync downloads a copy.
+create type knowledge_source_type as enum ('upload', 'drive');
+create type knowledge_document_status as enum ('uploaded', 'processing', 'ready', 'failed', 'outdated');
+
+create table knowledge_documents (
+  id uuid primary key default gen_random_uuid(),
+  organisation_id uuid not null references organisations (id) on delete cascade,
+  title text not null,
+  source_type knowledge_source_type not null default 'upload',
+  storage_path text,
+  mime_type text,
+  size_bytes bigint,
+  status knowledge_document_status not null default 'uploaded',
+  error_message text,
+  content_hash text,
+  -- Populated only for source_type = 'drive' (prepared architecture —
+  -- product spec §22/§23; no Drive integration ships in this phase).
+  drive_file_id text,
+  drive_modified_at timestamptz,
+  last_synced_at timestamptz,
+  created_by uuid references auth.users (id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index knowledge_documents_organisation_id_idx on knowledge_documents (organisation_id);
+create index knowledge_documents_status_idx on knowledge_documents (status);
+
+create trigger set_knowledge_documents_updated_at
+  before update on knowledge_documents
+  for each row execute function set_updated_at();
+
+alter table knowledge_documents enable row level security;
+
+create policy "knowledge_documents_select" on knowledge_documents for select
+  using (is_member_of_org(organisation_id));
+create policy "knowledge_documents_insert" on knowledge_documents for insert
+  with check (is_member_of_org(organisation_id));
+create policy "knowledge_documents_update" on knowledge_documents for update
+  using (is_member_of_org(organisation_id));
+create policy "knowledge_documents_delete" on knowledge_documents for delete
+  using (is_member_of_org(organisation_id));
+
+-- ── knowledge_chunks ────────────────────────────────────────────────────
+-- organisation_id is denormalised (rather than derived only via
+-- document_id → knowledge_documents) so retrieval can filter directly
+-- without a join, same reasoning as generated_assets.organisation_id.
+-- embedding is nullable: full-text search (search_vector) always works;
+-- vector similarity is an enhancement available only once a real
+-- embedding provider is configured — never faked from a meaningless
+-- mock vector.
+create table knowledge_chunks (
+  id uuid primary key default gen_random_uuid(),
+  document_id uuid not null references knowledge_documents (id) on delete cascade,
+  organisation_id uuid not null references organisations (id) on delete cascade,
+  chunk_index int not null,
+  content text not null,
+  search_vector tsvector generated always as (to_tsvector('english', content)) stored,
+  embedding vector(1536),
+  embedding_model text,
+  created_at timestamptz not null default now(),
+  unique (document_id, chunk_index)
+);
+
+create index knowledge_chunks_organisation_id_idx on knowledge_chunks (organisation_id);
+create index knowledge_chunks_document_id_idx on knowledge_chunks (document_id);
+create index knowledge_chunks_search_vector_idx on knowledge_chunks using gin (search_vector);
+-- ivfflat needs training data to be useful; fine to add once real content
+-- volume exists. A plain btree-free sequential scan is acceptable at the
+-- scale this product operates at today.
+create index knowledge_chunks_embedding_idx on knowledge_chunks using ivfflat (embedding vector_cosine_ops) with (lists = 100);
+
+alter table knowledge_chunks enable row level security;
+
+create policy "knowledge_chunks_select" on knowledge_chunks for select
+  using (is_member_of_org(organisation_id));
+create policy "knowledge_chunks_insert" on knowledge_chunks for insert
+  with check (is_member_of_org(organisation_id));
+create policy "knowledge_chunks_delete" on knowledge_chunks for delete
+  using (is_member_of_org(organisation_id));
+
+-- ── inspiration_items (product spec §32) ───────────────────────────────
+create table inspiration_items (
+  id uuid primary key default gen_random_uuid(),
+  organisation_id uuid not null references organisations (id) on delete cascade,
+  title text not null,
+  url text,
+  storage_path text,
+  notes text,
+  category text,
+  created_by uuid references auth.users (id),
+  created_at timestamptz not null default now()
+);
+
+create index inspiration_items_organisation_id_idx on inspiration_items (organisation_id);
+
+alter table inspiration_items enable row level security;
+
+create policy "inspiration_items_select" on inspiration_items for select
+  using (is_member_of_org(organisation_id));
+create policy "inspiration_items_insert" on inspiration_items for insert
+  with check (is_member_of_org(organisation_id));
+create policy "inspiration_items_delete" on inspiration_items for delete
+  using (is_member_of_org(organisation_id));
+
+-- ── competitors (product spec §33) ─────────────────────────────────────
+create table competitors (
+  id uuid primary key default gen_random_uuid(),
+  organisation_id uuid not null references organisations (id) on delete cascade,
+  name text not null,
+  website text,
+  notes text,
+  created_at timestamptz not null default now()
+);
+
+create index competitors_organisation_id_idx on competitors (organisation_id);
+
+alter table competitors enable row level security;
+
+create policy "competitors_select" on competitors for select
+  using (is_member_of_org(organisation_id));
+create policy "competitors_insert" on competitors for insert
+  with check (is_member_of_org(organisation_id));
+create policy "competitors_delete" on competitors for delete
+  using (is_member_of_org(organisation_id));
+
+-- ── campaign_recommendations (product spec §39-42) ─────────────────────
+create type recommendation_status as enum ('suggested', 'saved', 'dismissed', 'created');
+
+create table campaign_recommendations (
+  id uuid primary key default gen_random_uuid(),
+  organisation_id uuid not null references organisations (id) on delete cascade,
+  title text not null,
+  reason text not null,
+  objective campaign_objective,
+  audience_type audience_type,
+  product_id uuid references products (id) on delete set null,
+  suggested_concept text,
+  suggested_channels channel[] not null default '{}',
+  priority text not null default 'normal',
+  evidence text not null,
+  confidence text not null default 'medium',
+  status recommendation_status not null default 'suggested',
+  dismissal_reason text,
+  resulting_campaign_id uuid references campaigns (id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index campaign_recommendations_organisation_id_idx on campaign_recommendations (organisation_id);
+create index campaign_recommendations_status_idx on campaign_recommendations (status);
+
+create trigger set_campaign_recommendations_updated_at
+  before update on campaign_recommendations
+  for each row execute function set_updated_at();
+
+alter table campaign_recommendations enable row level security;
+
+create policy "campaign_recommendations_select" on campaign_recommendations for select
+  using (is_member_of_org(organisation_id));
+create policy "campaign_recommendations_insert" on campaign_recommendations for insert
+  with check (is_member_of_org(organisation_id));
+create policy "campaign_recommendations_update" on campaign_recommendations for update
+  using (is_member_of_org(organisation_id));
+
+-- ── performance_snapshots (product spec §34/§35 — schema only; no sync
+-- ships in this phase, see knowledge_document_status-style honesty rule:
+-- never populate this with fabricated data) ────────────────────────────
+create table performance_snapshots (
+  id uuid primary key default gen_random_uuid(),
+  organisation_id uuid not null references organisations (id) on delete cascade,
+  published_post_id uuid not null references published_posts (id) on delete cascade,
+  metric_type text not null,
+  value numeric not null,
+  captured_at timestamptz not null default now(),
+  raw jsonb not null default '{}'
+);
+
+create index performance_snapshots_organisation_id_idx on performance_snapshots (organisation_id);
+create index performance_snapshots_published_post_id_idx on performance_snapshots (published_post_id);
+
+alter table performance_snapshots enable row level security;
+
+create policy "performance_snapshots_select" on performance_snapshots for select
+  using (is_member_of_org(organisation_id));
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 0012_knowledge_storage.sql
+-- Storage bucket for uploaded knowledge documents (PDF/DOCX/text) — kept
+-- separate from `brand-assets` since it's a different concern (source
+-- material for retrieval, not brand imagery) and needs document mime
+-- types brand-assets doesn't allow.
+-- ─────────────────────────────────────────────────────────────────────────
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values
+  ('knowledge-documents', 'knowledge-documents', false, 26214400,
+    array['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'text/markdown'])
+on conflict (id) do nothing;
+
+create policy "knowledge-documents_select" on storage.objects for select
+  using (bucket_id = 'knowledge-documents' and is_member_of_org((storage.foldername(name))[1]::uuid));
+create policy "knowledge-documents_insert" on storage.objects for insert
+  with check (bucket_id = 'knowledge-documents' and is_member_of_org((storage.foldername(name))[1]::uuid));
+create policy "knowledge-documents_delete" on storage.objects for delete
+  using (bucket_id = 'knowledge-documents' and is_member_of_org((storage.foldername(name))[1]::uuid));
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 0013_knowledge_search_rpc.sql
+-- PostgREST can't ORDER BY a computed distance expression directly, so
+-- vector similarity search needs a callable function (product spec §17/
+-- §18/§25). security invoker (not definer) so the caller's own RLS still
+-- applies — this never bypasses organisation isolation, the match_org
+-- parameter is a convenience filter on top of it, not instead of it.
+-- ─────────────────────────────────────────────────────────────────────────
+
+create or replace function public.match_knowledge_chunks(
+  query_embedding vector(1536),
+  match_org uuid,
+  match_count int default 5
+)
+returns table (
+  id uuid,
+  document_id uuid,
+  content text,
+  similarity float
+)
+language sql
+stable
+security invoker
+set search_path = public
+as $$
+  select
+    knowledge_chunks.id,
+    knowledge_chunks.document_id,
+    knowledge_chunks.content,
+    1 - (knowledge_chunks.embedding <=> query_embedding) as similarity
+  from knowledge_chunks
+  where knowledge_chunks.organisation_id = match_org
+    and knowledge_chunks.embedding is not null
+  order by knowledge_chunks.embedding <=> query_embedding
+  limit match_count;
+$$;
+
+grant execute on function public.match_knowledge_chunks(vector, uuid, int) to authenticated;
+
